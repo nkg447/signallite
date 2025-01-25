@@ -16,6 +16,15 @@ const channelOffers = new Map();
 const channelAnswers = new Map();
 const channelIceCandidates = new Map();
 
+const clearChannelData = (channelName) => {
+  console.log("clearing channel data for - ", channelName);
+  console.log("current channel count - ", channelOffers.size);
+
+  channelAnswers.delete(channelName);
+  channelOffers.delete(channelName);
+  channelIceCandidates.delete(channelName);
+};
+
 io.on("connection", (socket) => {
   // Submit Offer
   socket.on("submitOffer", (data) => {
@@ -71,6 +80,7 @@ io.on("connection", (socket) => {
 
     // Acknowledge ICE candidate submission
     socket.emit("iceCandidateSubmitted", { channelName });
+    clearChannelData(channelName);
   });
 
   // Join a specific channel

@@ -13,10 +13,10 @@
     integrity="sha384-mkQ3/7FUtcGyoppY6bz/PORYoGqOl7/aSUMn2ymDOJcapfS6PHqxhRTMh1RR0Q6+"
     crossorigin="anonymous"
   ></script>
-  <script src="./webrtcClient.js"></script>
+  <script src="./client.js"></script>
   <script>
     let client = undefined;
-    async function start() {
+    function start() {
       const urlParams = new URLSearchParams(window.location.search);
       let channel = urlParams.get("channel");
       const uuidv4 = () => {
@@ -27,12 +27,19 @@
           ).toString(16)
         );
       };
-      const onMessage = (event)=>{
+      const onMessage = (event) => {
         console.log(event);
-      }
+      };
       if (channel && channel.length > 0) {
         // join
-        client = new WebRTCClient("http://localhost:3000", channel, onMessage);
+        client = new WebRTCClient(
+          "http://localhost:3000",
+          channel,
+          onMessage,
+          () => {
+            client.peerChannel.send("we are connected now - joiner");
+          }
+        );
         document.getElementById("joinLink").href =
           "/example.html?channel=" + channel;
       } else {
@@ -40,8 +47,15 @@
         channel = "uuidv4";
         document.getElementById("joinLink").href =
           "/example.html?channel=" + channel;
-        client = new WebRTCClient("http://localhost:3000", channel, onMessage);
-        await client.createOffer();
+        client = new WebRTCClient(
+          "http://localhost:3000",
+          channel,
+          onMessage,
+          () => {
+            client.peerChannel.send("we are connected now - creator");
+          }
+        );
+        client.createOffer();
       }
     }
     start();
