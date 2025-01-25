@@ -106,9 +106,9 @@ class WebRTCClient {
         
         // Delay to ensure channel is ready before callback
         let work = null;
-        work = setTimeout(() => {
+        work = setInterval(() => {
           if (this.peerChannel !== null) {
-            clearTimeout(work);
+            clearInterval(work);
             this.peerConnectCallback();
           }
         }, 200);
@@ -119,9 +119,9 @@ class WebRTCClient {
   // Initiate WebRTC connection by creating and sending an offer
   createOffer() {
     let work = null;
-    work = setTimeout(async () => {
+    work = setInterval(async () => {
       if (this.stage == 1) {
-        clearTimeout(work);
+        clearInterval(work);
         await this.initializePeerConnection();
         
         // Create and send WebRTC offer
