@@ -32,7 +32,10 @@ class WebRTCClient {
 
   async initializePeerConnection() {
     const iceConfig = {
-      iceServers: [{ urls: "stun:stun2.1.google.com:19302" }],
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
     };
     this.peerConnection = new RTCPeerConnection(iceConfig, {
       optional: [{ RtpDataChannels: true }],

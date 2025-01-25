@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+  <body>
+    <a id="joinLink">join link</a>
+  </body>
+  <script
+    src="https://cdn.socket.io/4.8.1/socket.io.min.js"
+    integrity="sha384-mkQ3/7FUtcGyoppY6bz/PORYoGqOl7/aSUMn2ymDOJcapfS6PHqxhRTMh1RR0Q6+"
+    crossorigin="anonymous"
+  ></script>
+  <script src="./webrtcClient.js"></script>
+  <script>
+    let client = undefined;
+    async function start() {
+      const urlParams = new URLSearchParams(window.location.search);
+      let channel = urlParams.get("channel");
+      const uuidv4 = () => {
+        return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+          (
+            +c ^
+            (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))
+          ).toString(16)
+        );
+      };
+      const onMessage = (event)=>{
+        console.log(event);
+      }
+      if (channel && channel.length > 0) {
+        // join
+        client = new WebRTCClient("http://localhost:3000", channel, onMessage);
+        document.getElementById("joinLink").href =
+          "/example.html?channel=" + channel;
+      } else {
+        //create
+        channel = "uuidv4";
+        document.getElementById("joinLink").href =
+          "/example.html?channel=" + channel;
+        client = new WebRTCClient("http://localhost:3000", channel, onMessage);
+        await client.createOffer();
+      }
+    }
+    start();
+  </script>
+</html>
