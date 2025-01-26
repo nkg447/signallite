@@ -1,3 +1,5 @@
+import io from 'socket.io-client';
+
 /**
  * WebRTCClient facilitates peer-to-peer WebRTC connections via a signaling server
  * 
@@ -109,7 +111,7 @@ class WebRTCClient {
         work = setInterval(() => {
           if (this.peerChannel !== null) {
             clearInterval(work);
-            this.peerConnectCallback();
+            this.peerConnectCallback(this.peerChannel);
           }
         }, 200);
       }
@@ -193,3 +195,5 @@ class WebRTCClient {
     };
   }
 }
+
+export default WebRTCClient;
