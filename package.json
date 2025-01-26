@@ -1,8 +1,8 @@
 {
-  "name": "signalite",
-  "version": "1.0.0",
+  "name": "@nkg447/signallite",
+  "version": "0.0.2",
   "description": "A lightweight node.js signaling server for WebRTC and a JS client.",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
     "start": "node server.js"
   },
