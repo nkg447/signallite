@@ -23,8 +23,8 @@
           "http://localhost:3000",
           channel,
           onMessage,
-          () => {
-            client.peerChannel.send("we are connected now - joiner");
+          (channel) => {
+            channel.send("we are connected now - joiner");
           }
         );
         document.getElementById("joinLink").href =
