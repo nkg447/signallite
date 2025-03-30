@@ -1,8 +1,9 @@
 const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
+const TerserPlugin = require("terser-webpack-plugin");
 
 module.exports = {
-  mode: "development",
+  mode: "development", // Will still be development for dev builds
   entry: "./WebRTCClient.js",
   output: {
     path: path.resolve(__dirname, "dist"),
@@ -42,5 +43,22 @@ module.exports = {
   },
   resolve: {
     extensions: [".js"],
+  },
+  devtool: "source-map",
+  optimization: {
+    minimize: true, // Enable minification even in development mode
+    minimizer: [
+      new TerserPlugin({
+        terserOptions: {
+          compress: {
+            drop_console: false, // Set to true to remove console logs
+          },
+          format: {
+            comments: false, // Remove comments
+          },
+        },
+        extractComments: false, // Don't extract comments to a separate file
+      }),
+    ],
   },
 };

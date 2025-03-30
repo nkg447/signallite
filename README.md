@@ -7,7 +7,7 @@ Run using ```node server.js``` from the terminal
 ## How to use
 JS link - 
 ```
-https://github.com/nkg447/signallite/releases/download/0.0.1/webrtc-client.0.0.1.js
+https://github.com/nkg447/signallite/releases/download/0.0.2/webrtc-client0.0.2.js
 ```
 
 Usage - 
