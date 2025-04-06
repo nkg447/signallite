@@ -5,20 +5,21 @@ import io from 'socket.io-client';
  * 
  * Connection stages:
  * 0 - Not initialized
- * 1 - Socket connected
- * 2 - Peer connected
+ * 1 - Socket connected to signaling server
+ * 2 - Peer connected (WebRTC connection established)
+ * 3 - Signaling disconnected (server connection closed after peer connection)
+ * 4 - Peer disconnected (attempting to reconnect to signaling server)
  * 
  * @param {string} serverUrl - URL of the signaling server
  * @param {string} channelName - Unique identifier for the communication channel
  * @param {Function} onMessage - Callback for incoming messages
  * @param {Function} peerConnectCallback - Callback when peers successfully connect
+ * @param {Function} statusCallback - Optional callback for connection status updates
  */
 class WebRTCClient {
-  constructor(serverUrl, channelName, onMessage, peerConnectCallback) {
-    // Initialize socket connection to signaling server
-    this.socket = io(serverUrl);
-    
+  constructor(serverUrl, channelName, onMessage, peerConnectCallback, statusCallback = null) {
     // Store communication parameters
+    this.serverUrl = serverUrl;
     this.channelName = channelName;
     
     // WebRTC connection components
@@ -29,25 +30,56 @@ class WebRTCClient {
     // Message and connection callbacks
     this.onMessage = onMessage;
     this.peerConnectCallback = peerConnectCallback;
+    this.statusCallback = statusCallback;
     
     // Track connection establishment stage
     this.stage = 0;
     
-    // Set up socket event listeners
+    // Initialize socket connection
+    this.connectToSignalingServer();
+  }
+
+  // Update current connection stage and notify via callback if provided
+  _updateStage(stage) {
+    this.stage = stage;
+    if (this.statusCallback) {
+      this.statusCallback(stage);
+    }
+    console.log(`Connection stage updated: ${stage}`);
+  }
+
+  // Connect to signaling server
+  connectToSignalingServer() {
+    console.log("Connecting to signaling server...");
+    this.socket = io(this.serverUrl);
     this.setupSocketListeners();
   }
 
-  // Update current connection stage
-  _updateStage(stage) {
-    this.stage = stage;
+  // Disconnect from signaling server
+  disconnectFromSignalingServer() {
+    if (this.socket && this.socket.connected) {
+      console.log("Disconnecting from signaling server");
+      this.socket.disconnect();
+      this._updateStage(3); // Signaling server disconnected
+    }
   }
 
   // Configure event listeners for socket communication
   setupSocketListeners() {
     // Establish socket connection and join channel
     this.socket.on("connect", () => {
+      console.log("Connected to signaling server");
       this.socket.emit("join", this.channelName);
       this._updateStage(1);
+    });
+
+    // Handle socket disconnection
+    this.socket.on("disconnect", () => {
+      console.log("Disconnected from signaling server");
+      // Only log as unexpected if we didn't initiate the disconnect
+      if (this.stage !== 3) {
+        console.log("Unexpected server disconnection");
+      }
     });
 
     // Handle incoming WebRTC offer from remote peer
@@ -90,6 +122,21 @@ class WebRTCClient {
     // Handle incoming data channels from remote peer
     this.peerConnection.ondatachannel = (event) => {
       this.peerChannel = event.channel;
+      
+      // Set up event handlers for the peer channel
+      this.peerChannel.onmessage = (event) => {
+        this.onMessage(event);
+      };
+      this.peerChannel.onerror = (error) => {
+        console.log("Peer channel error:", error);
+      };
+      this.peerChannel.onclose = () => {
+        console.log("Peer channel closed");
+        this.handlePeerDisconnection();
+      };
+      this.peerChannel.onopen = (event) => {
+        console.log("Peer channel opened:", event);
+      };
     };
 
     // Send ICE candidates to remote peer
@@ -101,7 +148,8 @@ class WebRTCClient {
 
     // Monitor connection state
     this.peerConnection.onconnectionstatechange = (event) => {
-      console.log(event);
+      console.log("Connection state change:", this.peerConnection.connectionState);
+      
       if (this.peerConnection.connectionState === "connected") {
         console.log("Peers Connected");
         this._updateStage(2);
@@ -112,10 +160,55 @@ class WebRTCClient {
           if (this.peerChannel !== null) {
             clearInterval(work);
             this.peerConnectCallback(this.peerChannel);
+            
+            // Disconnect from signaling server after successful peer connection
+            setTimeout(() => this.disconnectFromSignalingServer(), 1000);
           }
         }, 200);
+      } 
+      else if (["disconnected", "failed", "closed"].includes(this.peerConnection.connectionState)) {
+        console.log("Peer connection lost");
+        this.handlePeerDisconnection();
       }
     };
+  }
+
+  // Handle peer disconnection
+  handlePeerDisconnection() {
+    // Only handle if we were previously connected
+    if (this.stage === 2 || this.stage === 3) {
+      console.log("Handling peer disconnection");
+      this._updateStage(4);
+      
+      // Clean up existing connection
+      if (this.peerConnection) {
+        this.peerConnection.close();
+        this.peerConnection = null;
+      }
+      this.channel = null;
+      this.peerChannel = null;
+      
+      // Reconnect to signaling server
+      this.reconnectToSignalingServer();
+    }
+  }
+
+  // Reconnect to signaling server
+  reconnectToSignalingServer() {
+    console.log("Attempting to reconnect to signaling server");
+    
+    // If socket exists but is disconnected
+    if (this.socket) {
+      // Only reconnect if not already connected
+      if (!this.socket.connected) {
+        console.log("Reconnecting existing socket");
+        this.socket.connect();
+      }
+    } else {
+      // Create new connection if socket doesn't exist
+      console.log("Creating new socket connection");
+      this.connectToSignalingServer();
+    }
   }
 
   // Initiate WebRTC connection by creating and sending an offer
@@ -188,10 +281,14 @@ class WebRTCClient {
     this.channel.onmessage = (event) => {
       this.onMessage(event);
     };
-    this.channel.onerror = console.log;
-    this.channel.onclose = console.log;
+    this.channel.onerror = (error) => {
+      console.log("Data channel error:", error);
+    };
+    this.channel.onclose = () => {
+      console.log("Data channel closed");
+    };
     this.channel.onopen = (event) => {
-      console.log(event, "channel opened");
+      console.log("Data channel opened:", event);
     };
   }
 }
