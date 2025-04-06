@@ -1,97 +1,135 @@
+/**
+ * WebRTC Signaling Server
+ * 
+ * This server facilitates WebRTC connections between peers by:
+ * - Managing offer/answer exchange between clients
+ * - Handling ICE candidate sharing
+ * - Supporting multiple channels for different peer groups
+ */
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 
+// Initialize Express and Socket.io
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // Adjust in production
+    origin: "*", // Allow all origins (should be restricted in production)
     methods: ["GET", "POST"],
   },
 });
 
-// Store offers and answers for each channel
-const channelOffers = new Map();
-const channelAnswers = new Map();
-const channelIceCandidates = new Map();
-
-const clearChannelData = (channelName) => {
-  console.log("clearing channel data for - ", channelName);
-  console.log("current channel count - ", channelOffers.size);
-
-  channelAnswers.delete(channelName);
-  channelOffers.delete(channelName);
-  channelIceCandidates.delete(channelName);
+/**
+ * Data storage for WebRTC signaling
+ * Using Maps to store channel-specific information
+ */
+const channels = {
+  offers: new Map(),        // Stores SDP offers by channel name
+  answers: new Map(),       // Stores SDP answers by channel name
+  iceCandidates: new Map(), // Stores ICE candidates by channel name
 };
 
+/**
+ * Clears all data for a specific channel
+ * @param {string} channelName - Name of the channel to clear
+ */
+const clearChannelData = (channelName) => {
+  console.log(`Clearing channel data for: ${channelName}`);
+  console.log(`Current channel count before clearing: ${channels.offers.size}`);
+  
+  channels.offers.delete(channelName);
+  channels.answers.delete(channelName);
+  channels.iceCandidates.delete(channelName);
+};
+
+// Socket.io connection handler
 io.on("connection", (socket) => {
-  // Submit Offer
-  socket.on("submitOffer", (data) => {
-    const { channelName, offer } = data;
+  console.log(`New client connected: ${socket.id}`);
+  
+  /**
+   * Event handlers for WebRTC signaling
+   */
+  
+  // Handle channel joining
+  socket.on("join", (channelName) => {
+    console.log(`Client ${socket.id} joined channel: ${channelName}`);
+    socket.join(channelName);
+  });
 
-    // Store the offer for this channel
-    channelOffers.set(channelName, offer);
-
-    // Broadcast offer to other clients in the channel
+  // Handle SDP offer submission
+  socket.on("submitOffer", ({ channelName, offer }) => {
+    console.log(`Offer received for channel: ${channelName}`);
+    
+    // Store the offer
+    channels.offers.set(channelName, offer);
+    
+    // Broadcast to others in the channel
     socket.to(channelName).emit("offerReceived", offer);
-
-    // Acknowledge offer submission
+    
+    // Confirm receipt to sender
     socket.emit("offerSubmitted", { channelName });
   });
 
-  // Get Offer
-  socket.on("getOffer", (data) => {
-    const { channelName } = data;
-    const offer = channelOffers.get(channelName);
-
+  // Handle SDP offer retrieval
+  socket.on("getOffer", ({ channelName }) => {
+    const offer = channels.offers.get(channelName);
+    console.log(`Offer requested for channel: ${channelName}, exists: ${Boolean(offer)}`);
+    
     socket.emit("offerRetrieved", {
       channelName,
       offer,
     });
   });
 
-  // Submit Answer
-  socket.on("submitAnswer", (data) => {
-    const { channelName, answer } = data;
-
-    // Store the answer for this channel
-    channelAnswers.set(channelName, answer);
-
-    // Broadcast answer to other clients in the channel
+  // Handle SDP answer submission
+  socket.on("submitAnswer", ({ channelName, answer }) => {
+    console.log(`Answer received for channel: ${channelName}`);
+    
+    // Store the answer
+    channels.answers.set(channelName, answer);
+    
+    // Broadcast to others in the channel
     socket.to(channelName).emit("answerReceived", answer);
-
-    // Acknowledge answer submission
+    
+    // Confirm receipt to sender
     socket.emit("answerSubmitted", { channelName });
   });
 
-  // Submit ICE Candidate
-  socket.on("submitIceCandidate", (data) => {
-    const { channelName, candidate } = data;
-
-    // Add or create ICE candidates for this channel
-    if (!channelIceCandidates.has(channelName)) {
-      channelIceCandidates.set(channelName, []);
+  // Handle ICE candidate submission
+  socket.on("submitIceCandidate", ({ channelName, candidate }) => {
+    console.log(`ICE candidate received for channel: ${channelName}`);
+    
+    // Initialize array for this channel if needed
+    if (!channels.iceCandidates.has(channelName)) {
+      channels.iceCandidates.set(channelName, []);
     }
-    channelIceCandidates.get(channelName).push(candidate);
-
-    // Broadcast ICE candidate to other clients in the channel
+    
+    // Store the candidate
+    channels.iceCandidates.get(channelName).push(candidate);
+    
+    // Broadcast to others in the channel
     socket.to(channelName).emit("iceCandidateReceived", candidate);
-
-    // Acknowledge ICE candidate submission
+    
+    // Confirm receipt to sender
     socket.emit("iceCandidateSubmitted", { channelName });
+    
+    // Clean up channel data after ICE candidates are shared
+    // Note: This may need adjustment based on your specific requirements
+    // as it might be premature to clear data at this point
     clearChannelData(channelName);
   });
 
-  // Join a specific channel
-  socket.on("join", (channelName) => {
-    console.log("joined", channelName);
-
-    socket.join(channelName);
+  // Handle disconnection
+  socket.on("disconnect", () => {
+    console.log(`Client disconnected: ${socket.id}`);
+    // Additional cleanup could be added here if needed
   });
 });
 
+// Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Signaling server running on port ${PORT}`);
+  console.log(`WebRTC signaling server running on port ${PORT}`);
 });
