@@ -1,15 +1,15 @@
-import io from 'socket.io-client';
+import io from "socket.io-client";
 
 /**
  * WebRTCClient facilitates peer-to-peer WebRTC connections via a signaling server
- * 
+ *
  * Connection stages:
  * 0 - Not initialized
  * 1 - Socket connected to signaling server
  * 2 - Peer connected (WebRTC connection established)
  * 3 - Signaling disconnected (server connection closed after peer connection)
  * 4 - Peer disconnected (attempting to reconnect to signaling server)
- * 
+ *
  * @param {string} serverUrl - URL of the signaling server
  * @param {string} channelName - Unique identifier for the communication channel
  * @param {Function} onMessage - Callback for incoming messages
@@ -17,24 +17,30 @@ import io from 'socket.io-client';
  * @param {Function} statusCallback - Optional callback for connection status updates
  */
 class WebRTCClient {
-  constructor(serverUrl, channelName, onMessage, peerConnectCallback, statusCallback = null) {
+  constructor(
+    serverUrl,
+    channelName,
+    onMessage,
+    peerConnectCallback,
+    statusCallback = null
+  ) {
     // Store communication parameters
     this.serverUrl = serverUrl;
     this.channelName = channelName;
-    
+
     // WebRTC connection components
     this.peerConnection = null;
     this.channel = null;
     this.peerChannel = null;
-    
+
     // Message and connection callbacks
     this.onMessage = onMessage;
     this.peerConnectCallback = peerConnectCallback;
     this.statusCallback = statusCallback;
-    
+
     // Track connection establishment stage
     this.stage = 0;
-    
+
     // Initialize socket connection
     this.connectToSignalingServer();
   }
@@ -122,7 +128,7 @@ class WebRTCClient {
     // Handle incoming data channels from remote peer
     this.peerConnection.ondatachannel = (event) => {
       this.peerChannel = event.channel;
-      
+
       // Set up event handlers for the peer channel
       this.peerChannel.onmessage = (event) => {
         this.onMessage(event);
@@ -148,25 +154,31 @@ class WebRTCClient {
 
     // Monitor connection state
     this.peerConnection.onconnectionstatechange = (event) => {
-      console.log("Connection state change:", this.peerConnection.connectionState);
-      
+      console.log(
+        "Connection state change:",
+        this.peerConnection.connectionState
+      );
+
       if (this.peerConnection.connectionState === "connected") {
         console.log("Peers Connected");
         this._updateStage(2);
-        
+
         // Delay to ensure channel is ready before callback
         let work = null;
         work = setInterval(() => {
           if (this.peerChannel !== null) {
             clearInterval(work);
             this.peerConnectCallback(this.peerChannel);
-            
+
             // Disconnect from signaling server after successful peer connection
             setTimeout(() => this.disconnectFromSignalingServer(), 1000);
           }
         }, 200);
-      } 
-      else if (["disconnected", "failed", "closed"].includes(this.peerConnection.connectionState)) {
+      } else if (
+        ["disconnected", "failed", "closed"].includes(
+          this.peerConnection.connectionState
+        )
+      ) {
         console.log("Peer connection lost");
         this.handlePeerDisconnection();
       }
@@ -179,7 +191,7 @@ class WebRTCClient {
     if (this.stage === 2 || this.stage === 3) {
       console.log("Handling peer disconnection");
       this._updateStage(4);
-      
+
       // Clean up existing connection
       if (this.peerConnection) {
         this.peerConnection.close();
@@ -187,7 +199,7 @@ class WebRTCClient {
       }
       this.channel = null;
       this.peerChannel = null;
-      
+
       // Reconnect to signaling server
       this.reconnectToSignalingServer();
     }
@@ -196,29 +208,31 @@ class WebRTCClient {
   // Reconnect to signaling server
   reconnectToSignalingServer() {
     console.log("Attempting to reconnect to signaling server");
-    
-    // If socket exists but is disconnected
-    if (this.socket) {
-      // Only reconnect if not already connected
-      if (!this.socket.connected) {
-        console.log("Reconnecting existing socket");
-        this.socket.connect();
-      }
-    } else {
-      // Create new connection if socket doesn't exist
-      console.log("Creating new socket connection");
-      this.connectToSignalingServer();
+    this.socket.disconnect();
+    const client = new WebRTCClient(
+      this.serverUrl,
+      this.channelName,
+      this.onMessage,
+      this.peerConnectCallback,
+      this.statusCallback
+    );
+    if (this.offerCreator) {
+      // wait sometime for other peer to connect to server first
+      setTimeout(() => {
+        client.createOffer();
+      }, 2000);
     }
   }
 
   // Initiate WebRTC connection by creating and sending an offer
   createOffer() {
+    this.offerCreator = true;
     let work = null;
     work = setInterval(async () => {
       if (this.stage == 1) {
         clearInterval(work);
         await this.initializePeerConnection();
-        
+
         // Create and send WebRTC offer
         const offer = await this.peerConnection.createOffer();
         await this.peerConnection.setLocalDescription(offer);
@@ -234,7 +248,7 @@ class WebRTCClient {
   // Process incoming WebRTC offer from remote peer
   async handleRemoteOffer(offerString) {
     await this.initializePeerConnection();
-    
+
     // Parse and set remote description
     const offer = JSON.parse(offerString);
     const remoteDesc = new RTCSessionDescription(offer);
