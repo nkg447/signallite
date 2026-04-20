@@ -56,6 +56,13 @@ io.on("connection", (socket) => {
   socket.on("join", (channelName) => {
     console.log(`Client ${socket.id} joined channel: ${channelName}`);
     socket.join(channelName);
+
+    // If an offer already exists for this channel, send it to the new joiner
+    const existingOffer = channels.offers.get(channelName);
+    if (existingOffer) {
+      console.log(`Replaying existing offer for channel: ${channelName}`);
+      socket.emit("offerReceived", existingOffer);
+    }
   });
 
   // Handle SDP offer submission
@@ -115,10 +122,9 @@ io.on("connection", (socket) => {
     // Confirm receipt to sender
     socket.emit("iceCandidateSubmitted", { channelName });
     
-    // Clean up channel data after ICE candidates are shared
-    // Note: This may need adjustment based on your specific requirements
-    // as it might be premature to clear data at this point
-    clearChannelData(channelName);
+    // Note: Channel data is cleaned up when clients disconnect, not here.
+    // Clearing on ICE candidate submission is premature since multiple
+    // candidates are exchanged during negotiation.
   });
 
   // Handle disconnection
