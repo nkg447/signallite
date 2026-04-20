@@ -1,8 +1,15 @@
 {
   "name": "@nkg447/signallite",
-  "version": "0.1",
+  "version": "0.2.0",
   "description": "A lightweight node.js signaling server for WebRTC and a JS client.",
   "main": "index.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "node": "./index.node.js",
+      "default": "./index.js"
+    }
+  },
   "scripts": {
     "start": "node server.js",
     "build": "webpack"
@@ -13,13 +20,22 @@
     "socket.io-client": "^4.8.1",
     "ws": "^8.18.0"
   },
+  "peerDependencies": {
+    "node-datachannel": "^0.32.2"
+  },
+  "peerDependenciesMeta": {
+    "node-datachannel": {
+      "optional": true
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nkg447/signallite.git"
   },
   "keywords": [
     "webrtc",
-    "css"
+    "signaling",
+    "p2p"
   ],
   "author": "Nikunj Gupta",
   "license": "MIT",

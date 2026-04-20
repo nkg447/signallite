@@ -7,9 +7,9 @@
  * - Supporting multiple channels for different peer groups
  */
 
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
 
 // Initialize Express and Socket.io
 const app = express();
