@@ -9,12 +9,16 @@ import io from "socket.io-client";
  * 2 - Peer connected (WebRTC connection established)
  * 3 - Signaling disconnected (server connection closed after peer connection)
  * 4 - Peer disconnected (attempting to reconnect to signaling server)
+ * 5 - Reconnect attempts exhausted (gave up reconnecting)
  *
  * @param {string} serverUrl - URL of the signaling server
  * @param {string} channelName - Unique identifier for the communication channel
  * @param {Function} onMessage - Callback for incoming messages
  * @param {Function} peerConnectCallback - Callback when peers successfully connect
  * @param {Function} statusCallback - Optional callback for connection status updates
+ * @param {Object} options - Optional configuration
+ * @param {number} [options.maxReconnectAttempts=5] - Max reconnect retries (-1 for unlimited)
+ * @param {number} [options.reconnectBaseDelay=1000] - Base delay in ms for exponential backoff
  */
 class WebRTCClient {
   constructor(
@@ -22,7 +26,8 @@ class WebRTCClient {
     channelName,
     onMessage,
     peerConnectCallback,
-    statusCallback = null
+    statusCallback = null,
+    options = {}
   ) {
     // Store communication parameters
     this.serverUrl = serverUrl;
@@ -40,6 +45,12 @@ class WebRTCClient {
 
     // Track connection establishment stage
     this.stage = 0;
+
+    // Auto-reconnect configuration
+    this.maxReconnectAttempts = options.maxReconnectAttempts !== undefined ? options.maxReconnectAttempts : 5;
+    this.reconnectBaseDelay = options.reconnectBaseDelay || 1000;
+    this.reconnectAttempts = 0;
+    this._reconnectTimer = null;
 
     // Initialize socket connection
     this.connectToSignalingServer();
@@ -63,6 +74,11 @@ class WebRTCClient {
 
   // Disconnect from signaling server
   disconnectFromSignalingServer() {
+    // Cancel any pending reconnect attempt
+    if (this._reconnectTimer !== null) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this.socket && this.socket.connected) {
       console.log("Disconnecting from signaling server");
       this.socket.disconnect();
@@ -161,6 +177,7 @@ class WebRTCClient {
 
       if (this.peerConnection.connectionState === "connected") {
         console.log("Peers Connected");
+        this.reconnectAttempts = 0; // Reset counter on successful connection
         this._updateStage(2);
 
         // Delay to ensure channel is ready before callback
@@ -205,23 +222,36 @@ class WebRTCClient {
     }
   }
 
-  // Reconnect to signaling server
+  // Reconnect to signaling server with exponential backoff
   reconnectToSignalingServer() {
-    console.log("Attempting to reconnect to signaling server");
-    this.socket.disconnect();
-    const client = new WebRTCClient(
-      this.serverUrl,
-      this.channelName,
-      this.onMessage,
-      this.peerConnectCallback,
-      this.statusCallback
-    );
-    if (this.offerCreator) {
-      // wait sometime for other peer to connect to server first
-      setTimeout(() => {
-        client.createOffer();
-      }, 2000);
+    if (this.maxReconnectAttempts !== -1 && this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.log(`Max reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
+      this._updateStage(5);
+      return;
     }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(
+      this.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts - 1),
+      30000
+    );
+    const maxLabel = this.maxReconnectAttempts === -1 ? '\u221e' : this.maxReconnectAttempts;
+    console.log(`Reconnect attempt ${this.reconnectAttempts}/${maxLabel} in ${delay}ms...`);
+
+    // Clean up existing socket before reconnecting
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+    }
+
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this.connectToSignalingServer();
+      if (this.offerCreator) {
+        // Delay offer creation to allow the remote peer to rejoin the channel first
+        setTimeout(() => this.createOffer(), 2000);
+      }
+    }, delay);
   }
 
   // Initiate WebRTC connection by creating and sending an offer
