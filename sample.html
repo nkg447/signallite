@@ -200,186 +200,12 @@
       </div>
     </div>
 
-    <!-- socket.io client from CDN -->
-    <script src="/socket.io/socket.io.js"></script>
+    <script type="importmap">
+      { "imports": { "socket.io-client": "/socket.io/socket.io.esm.min.js" } }
+    </script>
 
-    <script>
-      // ── Inline WebRTCClient (no ES-module syntax) ────────────────────────
-
-      class WebRTCClient {
-        constructor(serverUrl, channelName, onMessage, peerConnectCallback, statusCallback = null, options = {}) {
-          this.serverUrl = serverUrl;
-          this.channelName = channelName;
-          this.peerConnection = null;
-          this.channel = null;
-          this.peerChannel = null;
-          this.onMessage = onMessage;
-          this.peerConnectCallback = peerConnectCallback;
-          this.statusCallback = statusCallback;
-          this.stage = 0;
-          this.offerCreator = false;
-          this.maxReconnectAttempts = options.maxReconnectAttempts !== undefined ? options.maxReconnectAttempts : 5;
-          this.reconnectBaseDelay = options.reconnectBaseDelay || 1000;
-          this.reconnectAttempts = 0;
-          this._reconnectTimer = null;
-          this.connectToSignalingServer();
-        }
-
-        _updateStage(stage) {
-          this.stage = stage;
-          if (this.statusCallback) this.statusCallback(stage);
-        }
-
-        connectToSignalingServer() {
-          this.socket = io(this.serverUrl);
-          this.setupSocketListeners();
-        }
-
-        disconnectFromSignalingServer() {
-          if (this._reconnectTimer !== null) {
-            clearTimeout(this._reconnectTimer);
-            this._reconnectTimer = null;
-          }
-          if (this.socket && this.socket.connected) {
-            this.socket.disconnect();
-            this._updateStage(3);
-          }
-        }
-
-        setupSocketListeners() {
-          this.socket.on("connect", () => {
-            this.socket.emit("join", this.channelName);
-            this._updateStage(1);
-          });
-
-          this.socket.on("disconnect", () => {
-            if (this.stage !== 3) console.log("Unexpected server disconnection");
-          });
-
-          this.socket.on("offerReceived", async (offer) => {
-            await this.handleRemoteOffer(offer);
-          });
-
-          this.socket.on("answerReceived", async (answer) => {
-            await this.handleRemoteAnswer(answer);
-          });
-
-          this.socket.on("iceCandidateReceived", async (candidate) => {
-            await this.addIceCandidate(candidate);
-          });
-        }
-
-        async initializePeerConnection() {
-          const iceConfig = {
-            iceServers: [
-              { urls: "stun:stun.l.google.com:19302" },
-              { urls: "stun:stun1.l.google.com:19302" },
-            ],
-          };
-          this.peerConnection = new RTCPeerConnection(iceConfig);
-          this.addDataChannel(this.channelName);
-
-          this.peerConnection.ondatachannel = (event) => {
-            this.peerChannel = event.channel;
-            this.peerChannel.onmessage = (e) => this.onMessage(e);
-            this.peerChannel.onerror = (e) => console.error("Peer channel error:", e);
-            this.peerChannel.onclose = () => this.handlePeerDisconnection();
-          };
-
-          this.peerConnection.addEventListener("icecandidate", (event) => {
-            if (event.candidate) this.submitIceCandidate(event.candidate);
-          });
-
-          this.peerConnection.onconnectionstatechange = () => {
-            const s = this.peerConnection.connectionState;
-            if (s === "connected") {
-              this.reconnectAttempts = 0;
-              this._updateStage(2);
-              const poll = setInterval(() => {
-                if (this.peerChannel !== null) {
-                  clearInterval(poll);
-                  this.peerConnectCallback(this.peerChannel);
-                  setTimeout(() => this.disconnectFromSignalingServer(), 1000);
-                }
-              }, 200);
-            } else if (["disconnected", "failed", "closed"].includes(s)) {
-              this.handlePeerDisconnection();
-            }
-          };
-        }
-
-        handlePeerDisconnection() {
-          if (this.stage === 2 || this.stage === 3) {
-            this._updateStage(4);
-            if (this.peerConnection) { this.peerConnection.close(); this.peerConnection = null; }
-            this.channel = null;
-            this.peerChannel = null;
-            this.reconnectToSignalingServer();
-          }
-        }
-
-        reconnectToSignalingServer() {
-          if (this.maxReconnectAttempts !== -1 && this.reconnectAttempts >= this.maxReconnectAttempts) {
-            this._updateStage(5);
-            return;
-          }
-          this.reconnectAttempts++;
-          const delay = Math.min(this.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
-          if (this.socket) { this.socket.removeAllListeners(); this.socket.disconnect(); }
-          this._reconnectTimer = setTimeout(() => {
-            this._reconnectTimer = null;
-            this.connectToSignalingServer();
-            if (this.offerCreator) setTimeout(() => this.createOffer(), 2000);
-          }, delay);
-        }
-
-        createOffer() {
-          this.offerCreator = true;
-          const poll = setInterval(async () => {
-            if (this.stage === 1) {
-              clearInterval(poll);
-              await this.initializePeerConnection();
-              const offer = await this.peerConnection.createOffer();
-              await this.peerConnection.setLocalDescription(offer);
-              this.socket.emit("submitOffer", { channelName: this.channelName, offer: JSON.stringify(offer) });
-            }
-          }, 200);
-        }
-
-        async handleRemoteOffer(offerString) {
-          await this.initializePeerConnection();
-          const offer = JSON.parse(offerString);
-          await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await this.peerConnection.createAnswer();
-          await this.peerConnection.setLocalDescription(answer);
-          this.socket.emit("submitAnswer", { channelName: this.channelName, answer: JSON.stringify(answer) });
-        }
-
-        async handleRemoteAnswer(answerString) {
-          const answer = JSON.parse(answerString);
-          await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-        }
-
-        submitIceCandidate(candidate) {
-          this.socket.emit("submitIceCandidate", { channelName: this.channelName, candidate: JSON.stringify(candidate) });
-        }
-
-        async addIceCandidate(candidateString) {
-          const candidate = JSON.parse(candidateString);
-          await this.peerConnection.addIceCandidate(candidate);
-        }
-
-        addDataChannel(name) {
-          this.channel = this.peerConnection.createDataChannel(name, { reliable: true });
-          this.channel.onmessage = (e) => this.onMessage(e);
-          this.channel.onerror = (e) => console.error("Data channel error:", e);
-        }
-
-        send(msg) {
-          const ch = this.peerChannel || this.channel;
-          if (ch && ch.readyState === "open") ch.send(msg);
-        }
-      }
+    <script type="module">
+      import WebRTCClient from '/WebRTCClient.js';
 
       // ── App logic ────────────────────────────────────────────────────────
 
@@ -437,6 +263,7 @@
       }
 
       function onPeerConnect(ch) {
+        peerChannel = ch;
         setupEl.style.display = "none";
         chatEl.style.display = "flex";
         msgInput.disabled = false;
@@ -444,10 +271,12 @@
         msgInput.focus();
       }
 
+      let peerChannel = null;
+
       function sendMessage() {
         const text = msgInput.value.trim();
         if (!text) return;
-        client.send(text);
+        if (peerChannel && peerChannel.readyState === "open") peerChannel.send(text);
         appendMessage(text, true);
         msgInput.value = "";
       }
@@ -457,13 +286,13 @@
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
       });
 
-      function copyLink() {
+      window.copyLink = function() {
         navigator.clipboard.writeText(inviteLink.textContent).then(() => {
           const btn = document.querySelector(".copy-btn");
           btn.textContent = "Copied!";
           setTimeout(() => { btn.textContent = "Copy"; }, 2000);
         });
-      }
+      };
 
       function generateChannelId() {
         return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
