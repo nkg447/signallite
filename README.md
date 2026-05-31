@@ -45,3 +45,6 @@ const client = new new WebRTCClient(
 // make sure the peer that joines later should trigger client.createOffer()
 client.createOffer();
 ```
+
+## Demo
+A ready-to-use peer-to-peer chat app is included at `chat.html`. Start the server and open [http://localhost:3000/chat.html](http://localhost:3000/chat.html) — share the generated link (or scan the QR code) with another device to connect.

@@ -13,6 +13,7 @@ import { Server } from "socket.io";
 
 // Initialize Express and Socket.io
 const app = express();
+app.use(express.static("."));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
