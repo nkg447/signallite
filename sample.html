@@ -186,6 +186,7 @@
             <span id="invite-link"></span>
             <button class="copy-btn" onclick="copyLink()">Copy</button>
           </div>
+          <canvas id="qr-canvas" style="margin-top:8px;"></canvas>
           <span id="waiting-msg">Waiting for someone to join…</span>
         </div>
       </div>
@@ -199,6 +200,8 @@
         </div>
       </div>
     </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1/build/qrcode.min.js"></script>
 
     <script type="importmap">
       { "imports": { "socket.io-client": "/socket.io/socket.io.esm.min.js" } }
@@ -319,6 +322,7 @@
           setupDesc.textContent = "Send the link below to the person you want to chat with. The chat will open automatically once they join.";
           inviteLink.textContent = link;
           inviteArea.style.display = "flex";
+          QRCode.toCanvas(document.getElementById('qr-canvas'), link, { width: 160 });
           setStatus("Waiting for peer…", false);
 
           client = new WebRTCClient(SERVER_URL, channel, onMessage, onPeerConnect, onStatusChange);
