@@ -214,10 +214,7 @@
       // ── App logic ────────────────────────────────────────────────────────
 
       const params = new URLSearchParams(window.location.search);
-      const serverOverride = params.get("server");
-      const defaultServer = window.location.hostname.endsWith(".github.io")
-        ? "https://signallite.nikunjgupta.dev"
-        : window.location.origin;
+      const SERVER_URL = "https://signallite.nikunjgupta.dev";
 
       const statusDot  = document.getElementById("status-dot");
       const statusText = document.getElementById("status-text");
@@ -316,21 +313,16 @@
       }
 
       function start() {
-        let serverUrl;
         try {
-          const parsed = new URL(serverOverride === null ? defaultServer : serverOverride);
-          if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password ||
-              parsed.pathname !== "/" || parsed.search || parsed.hash) {
-            throw new Error("Use an HTTP(S) server origin without credentials, a path, or a query.");
+          for (const server of params.getAll("server")) {
+            if (new URL(server).href !== `${SERVER_URL}/`) {
+              throw new Error("This chat only supports the configured signaling server.");
+            }
           }
-          if (window.location.protocol === "https:" && parsed.protocol !== "https:") {
-            throw new Error("An HTTPS page requires an HTTPS signaling server.");
-          }
-          serverUrl = parsed.origin;
         } catch (error) {
-          console.error("Invalid signaling server URL:", error);
-          setupTitle.textContent = "Invalid signaling server";
-          setupDesc.textContent = "Provide a valid server origin in the server URL parameter.";
+          console.error("Unsupported signaling server in invite link:", error);
+          setupTitle.textContent = "Unsupported signaling server";
+          setupDesc.textContent = `This chat only supports ${SERVER_URL}. Use an invite link for that server.`;
           setStatus("Configuration error", false);
           return;
         }
@@ -344,7 +336,7 @@
           setupDesc.textContent = "Connecting to your peer. This should only take a moment.";
           setStatus("Joining…", false);
 
-          client = new WebRTCClient(serverUrl, channel, onMessage, onPeerConnect, onStatusChange);
+          client = new WebRTCClient(SERVER_URL, channel, onMessage, onPeerConnect, onStatusChange);
         } else {
           // ── Creator ──
           channel = generateChannelId();
@@ -352,7 +344,6 @@
           link.search = "";
           link.hash = "";
           link.searchParams.set("channel", channel);
-          if (serverOverride !== null) link.searchParams.set("server", serverUrl);
 
           setupTitle.textContent = "Share this link";
           setupDesc.textContent = "Send the link below to the person you want to chat with. The chat will open automatically once they join.";
@@ -367,7 +358,7 @@
           }
           setStatus("Waiting for peer…", false);
 
-          client = new WebRTCClient(serverUrl, channel, onMessage, onPeerConnect, onStatusChange);
+          client = new WebRTCClient(SERVER_URL, channel, onMessage, onPeerConnect, onStatusChange);
           client.createOffer();
         }
       }

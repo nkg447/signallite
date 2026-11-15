@@ -120,15 +120,11 @@ The bundle includes the Socket.IO client.
 ## Chat demo on GitHub Pages
 
 Publish `chat.html` and `WebRTCClient.js` together on GitHub Pages, then open
-`https://<user>.github.io/<repository>/chat.html`. The page uses
-`https://signallite.nikunjgupta.dev` for signaling on `github.io` and loads
-Socket.IO and QR code libraries from CDNs. Share its invite link with another
-peer. When served elsewhere, it uses the page's origin by default.
-
-To select another signaling server, add a URL-encoded `server` parameter, for
-example `?server=https%3A%2F%2Fexample.com`. It must be an HTTP(S) origin with
-no credentials, path, query, or fragment; HTTPS pages require an HTTPS server.
-The chosen server is included in the invite link so both peers use it.
+`https://<user>.github.io/<repository>/chat.html`. Regardless of where it is
+hosted, the chat uses `https://signallite.nikunjgupta.dev` for signaling and
+loads Socket.IO and QR code libraries from CDNs. Share its invite link with
+another peer. Existing links naming that same server remain valid; links naming
+another server show a configuration error.
 GitHub Pages hosts only the static page; the signaling server must be reachable
 and allow cross-origin Socket.IO connections.
 

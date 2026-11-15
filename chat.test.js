@@ -70,30 +70,37 @@ test("GitHub Pages uses hosted signaling and retains its project path", () => {
   assert.equal(joiner.clients[0].offerCreated, undefined);
 });
 
-test("local and non-GitHub pages use their own origin", () => {
-  for (const origin of ["http://localhost:3000", "https://myapp.example"]) {
+test("all hosting origins use the configured signaling server", () => {
+  for (const origin of ["http://localhost:3000", "https://myapp.example", "https://nikunjgupta.dev", "https://nkg447.github.io"]) {
     const result = startPage(`${origin}/chat.html`);
-    assert.equal(result.clients[0].server, origin);
+    assert.equal(result.clients[0].server, "https://signallite.nikunjgupta.dev");
   }
 });
 
-test("custom signaling server is shared with the joiner", () => {
-  const result = startPage("https://myapp.example/chat.html?server=https%3A%2F%2Fsignal.example%3A8443");
-  assert.equal(result.clients[0].server, "https://signal.example:8443");
+test("legacy links for the configured server still work", () => {
+  const result = startPage("https://myapp.example/chat.html?server=https%3A%2F%2Fsignallite.nikunjgupta.dev");
+  assert.equal(result.clients[0].server, "https://signallite.nikunjgupta.dev");
   const invite = new URL(result.elements.get("invite-link").textContent);
-  assert.equal(invite.searchParams.get("server"), "https://signal.example:8443");
+  assert.equal(invite.searchParams.has("server"), false);
   const joiner = startPage(invite.href);
   assert.equal(joiner.clients[0].server, result.clients[0].server);
   assert.equal(joiner.clients[0].channel, result.clients[0].channel);
+  const legacyJoiner = startPage("https://myapp.example/chat.html?channel=old-room&server=https%3A%2F%2Fsignallite.nikunjgupta.dev");
+  assert.equal(legacyJoiner.clients[0].server, "https://signallite.nikunjgupta.dev");
+  assert.equal(legacyJoiner.clients[0].channel, "old-room");
 });
 
-test("invalid or insecure server overrides display an error without connecting", () => {
-  for (const value of ["", "invalid", "http://insecure.example", "https://user:pass@example.com", "https://example.com/path", "https://example.com/?query=1"]) {
+test("unsupported server parameters display an error without connecting", () => {
+  for (const value of ["", "invalid", "http://insecure.example", "https://signal.example", "https://signallite.nikunjgupta.dev/path", "https://signallite.nikunjgupta.dev/?query=1"]) {
     const result = startPage(`https://myapp.example/chat.html?server=${encodeURIComponent(value)}`);
     assert.equal(result.clients.length, 0, value);
     assert.equal(result.elements.get("status-text").textContent, "Configuration error", value);
+    assert.equal(result.elements.get("setup-title").textContent, "Unsupported signaling server", value);
     assert.equal(result.errors.length, 1, value);
   }
+  const duplicate = startPage("https://myapp.example/chat.html?server=https%3A%2F%2Fsignallite.nikunjgupta.dev&server=https%3A%2F%2Fsignal.example");
+  assert.equal(duplicate.clients.length, 0);
+  assert.equal(duplicate.errors.length, 1);
 });
 
 test("a missing QR library does not prevent connecting or sharing a link", () => {
