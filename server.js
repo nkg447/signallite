@@ -28,6 +28,7 @@ const io = new Server(server, {
  */
 const channels = {
   offers: new Map(),        // Stores SDP offers by channel name
+  offerOwners: new Map(),
   answers: new Map(),       // Stores SDP answers by channel name
   iceCandidates: new Map(), // Stores ICE candidates by channel name
 };
@@ -41,6 +42,7 @@ const clearChannelData = (channelName) => {
   console.log(`Current channel count before clearing: ${channels.offers.size}`);
   
   channels.offers.delete(channelName);
+  channels.offerOwners.delete(channelName);
   channels.answers.delete(channelName);
   channels.iceCandidates.delete(channelName);
 };
@@ -63,6 +65,9 @@ io.on("connection", (socket) => {
     if (existingOffer) {
       console.log(`Replaying existing offer for channel: ${channelName}`);
       socket.emit("offerReceived", existingOffer);
+      for (const { sender, candidate } of channels.iceCandidates.get(channelName) || []) {
+        if (sender !== socket.id) socket.emit("iceCandidateReceived", candidate);
+      }
     }
   });
 
@@ -72,6 +77,9 @@ io.on("connection", (socket) => {
     
     // Store the offer
     channels.offers.set(channelName, offer);
+    channels.offerOwners.set(channelName, socket.id);
+    channels.answers.delete(channelName);
+    channels.iceCandidates.delete(channelName);
     
     // Broadcast to others in the channel
     socket.to(channelName).emit("offerReceived", offer);
@@ -115,7 +123,7 @@ io.on("connection", (socket) => {
     }
     
     // Store the candidate
-    channels.iceCandidates.get(channelName).push(candidate);
+    channels.iceCandidates.get(channelName).push({ sender: socket.id, candidate });
     
     // Broadcast to others in the channel
     socket.to(channelName).emit("iceCandidateReceived", candidate);
@@ -131,12 +139,17 @@ io.on("connection", (socket) => {
   // Handle disconnection
   socket.on("disconnect", () => {
     console.log(`Client disconnected: ${socket.id}`);
-    // Additional cleanup could be added here if needed
+    for (const [channelName, owner] of channels.offerOwners) {
+      if (owner === socket.id) clearChannelData(channelName);
+    }
+    for (const [channelName, candidates] of channels.iceCandidates) {
+      channels.iceCandidates.set(channelName, candidates.filter(({ sender }) => sender !== socket.id));
+    }
   });
 });
 
 // Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`WebRTC signaling server running on port ${PORT}`);
+  console.log(`WebRTC signaling server running on port ${server.address().port}`);
 });

@@ -175,6 +175,7 @@
         <span id="status-dot"></span>
         <h1>Signalite Chat</h1>
         <span id="status-text">Connecting…</span>
+        <button id="reconnect-btn" class="copy-btn" hidden>Reconnect</button>
       </div>
 
       <!-- Setup / invite screen -->
@@ -204,15 +205,19 @@
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1/build/qrcode.min.js"></script>
 
     <script type="importmap">
-      { "imports": { "socket.io-client": "/socket.io/socket.io.esm.min.js" } }
+      { "imports": { "socket.io-client": "https://cdn.socket.io/4.8.1/socket.io.esm.min.js" } }
     </script>
 
     <script type="module">
-      import WebRTCClient from '/WebRTCClient.js';
+      import WebRTCClient from './WebRTCClient.js';
 
       // ── App logic ────────────────────────────────────────────────────────
 
-      const SERVER_URL = window.location.origin;
+      const params = new URLSearchParams(window.location.search);
+      const serverOverride = params.get("server");
+      const defaultServer = window.location.hostname.endsWith(".github.io")
+        ? "https://signallite.nikunjgupta.dev"
+        : window.location.origin;
 
       const statusDot  = document.getElementById("status-dot");
       const statusText = document.getElementById("status-text");
@@ -225,6 +230,7 @@
       const messagesEl = document.getElementById("messages");
       const msgInput   = document.getElementById("msg-input");
       const sendBtn    = document.getElementById("send-btn");
+      const reconnectBtn = document.getElementById("reconnect-btn");
 
       let client;
       let myLabel = "You";
@@ -245,6 +251,12 @@
         };
         const [label, ok] = labels[stage] || ["Unknown", false];
         setStatus(label, ok);
+        reconnectBtn.hidden = stage !== 5;
+        if (!ok) {
+          peerChannel = null;
+          msgInput.disabled = true;
+          sendBtn.disabled = true;
+        }
       }
 
       function appendMessage(text, mine) {
@@ -279,12 +291,14 @@
       function sendMessage() {
         const text = msgInput.value.trim();
         if (!text) return;
-        if (peerChannel && peerChannel.readyState === "open") peerChannel.send(text);
+        if (!peerChannel || peerChannel.readyState !== "open") return;
+        peerChannel.send(text);
         appendMessage(text, true);
         msgInput.value = "";
       }
 
       sendBtn.addEventListener("click", sendMessage);
+      reconnectBtn.addEventListener("click", () => client.reconnect());
       msgInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
       });
@@ -302,7 +316,25 @@
       }
 
       function start() {
-        const params = new URLSearchParams(window.location.search);
+        let serverUrl;
+        try {
+          const parsed = new URL(serverOverride === null ? defaultServer : serverOverride);
+          if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password ||
+              parsed.pathname !== "/" || parsed.search || parsed.hash) {
+            throw new Error("Use an HTTP(S) server origin without credentials, a path, or a query.");
+          }
+          if (window.location.protocol === "https:" && parsed.protocol !== "https:") {
+            throw new Error("An HTTPS page requires an HTTPS signaling server.");
+          }
+          serverUrl = parsed.origin;
+        } catch (error) {
+          console.error("Invalid signaling server URL:", error);
+          setupTitle.textContent = "Invalid signaling server";
+          setupDesc.textContent = "Provide a valid server origin in the server URL parameter.";
+          setStatus("Configuration error", false);
+          return;
+        }
+
         let channel = params.get("channel");
 
         if (channel) {
@@ -312,20 +344,30 @@
           setupDesc.textContent = "Connecting to your peer. This should only take a moment.";
           setStatus("Joining…", false);
 
-          client = new WebRTCClient(SERVER_URL, channel, onMessage, onPeerConnect, onStatusChange);
+          client = new WebRTCClient(serverUrl, channel, onMessage, onPeerConnect, onStatusChange);
         } else {
           // ── Creator ──
           channel = generateChannelId();
-          const link = window.location.origin + window.location.pathname + "?channel=" + channel;
+          const link = new URL(window.location.href);
+          link.search = "";
+          link.hash = "";
+          link.searchParams.set("channel", channel);
+          if (serverOverride !== null) link.searchParams.set("server", serverUrl);
 
           setupTitle.textContent = "Share this link";
           setupDesc.textContent = "Send the link below to the person you want to chat with. The chat will open automatically once they join.";
-          inviteLink.textContent = link;
+          inviteLink.textContent = link.href;
           inviteArea.style.display = "flex";
-          QRCode.toCanvas(document.getElementById('qr-canvas'), link, { width: 160 });
+          if (typeof QRCode === "undefined") {
+            console.error("QR code library failed to load; use the invite link instead.");
+          } else {
+            QRCode.toCanvas(document.getElementById('qr-canvas'), link.href, { width: 160 }, (error) => {
+              if (error) console.error("Failed to generate invite QR code:", error);
+            });
+          }
           setStatus("Waiting for peer…", false);
 
-          client = new WebRTCClient(SERVER_URL, channel, onMessage, onPeerConnect, onStatusChange);
+          client = new WebRTCClient(serverUrl, channel, onMessage, onPeerConnect, onStatusChange);
           client.createOffer();
         }
       }

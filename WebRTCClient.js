@@ -1,24 +1,19 @@
 import io from "socket.io-client";
 
 /**
- * WebRTCClient facilitates peer-to-peer WebRTC connections via a signaling server
+ * WebRTC data-channel client.
+ * Stages: 0 idle, 1 signaling, 2 peer connected, 3 P2P active,
+ * 4 reconnecting, 5 retries exhausted.
  *
- * Connection stages:
- * 0 - Not initialized
- * 1 - Socket connected to signaling server
- * 2 - Peer connected (WebRTC connection established)
- * 3 - Signaling disconnected (server connection closed after peer connection)
- * 4 - Peer disconnected (attempting to reconnect to signaling server)
- * 5 - Reconnect attempts exhausted (gave up reconnecting)
- *
- * @param {string} serverUrl - URL of the signaling server
- * @param {string} channelName - Unique identifier for the communication channel
- * @param {Function} onMessage - Callback for incoming messages
- * @param {Function} peerConnectCallback - Callback when peers successfully connect
- * @param {Function} statusCallback - Optional callback for connection status updates
- * @param {Object} options - Optional configuration
- * @param {number} [options.maxReconnectAttempts=5] - Max reconnect retries (-1 for unlimited)
- * @param {number} [options.reconnectBaseDelay=1000] - Base delay in ms for exponential backoff
+ * @param {string} serverUrl
+ * @param {string} channelName
+ * @param {Function} onMessage
+ * @param {Function} peerConnectCallback Called with an open channel, including after recovery.
+ * @param {Function|null} statusCallback
+ * @param {Object} options
+ * @param {number} [options.maxReconnectAttempts=5] Use -1 for unlimited retries.
+ * @param {number} [options.reconnectBaseDelay=1000] Exponential backoff, capped at 30 seconds.
+ * @param {number} [options.reconnectTimeout=15000] Time allowed for each recovery attempt.
  */
 class WebRTCClient {
   constructor(
@@ -29,311 +24,311 @@ class WebRTCClient {
     statusCallback = null,
     options = {}
   ) {
-    // Store communication parameters
     this.serverUrl = serverUrl;
     this.channelName = channelName;
-
-    // WebRTC connection components
-    this.peerConnection = null;
-    this.channel = null;
-    this.peerChannel = null;
-
-    // Message and connection callbacks
     this.onMessage = onMessage;
     this.peerConnectCallback = peerConnectCallback;
     this.statusCallback = statusCallback;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 5;
+    this.reconnectBaseDelay = options.reconnectBaseDelay ?? 1000;
+    this.reconnectTimeout = options.reconnectTimeout ?? 15000;
+    if (!Number.isInteger(this.maxReconnectAttempts) || this.maxReconnectAttempts < -1 ||
+        !Number.isFinite(this.reconnectBaseDelay) || this.reconnectBaseDelay <= 0 ||
+        !Number.isFinite(this.reconnectTimeout) || this.reconnectTimeout <= 0) {
+      throw new RangeError("Invalid reconnect options");
+    }
 
-    // Track connection establishment stage
     this.stage = 0;
-
-    // Auto-reconnect configuration
-    this.maxReconnectAttempts = options.maxReconnectAttempts !== undefined ? options.maxReconnectAttempts : 5;
-    this.reconnectBaseDelay = options.reconnectBaseDelay || 1000;
     this.reconnectAttempts = 0;
+    this.offerCreator = false;
+    this.socket = null;
+    this.peerConnection = null;
+    this.channel = null;
+    this.peerChannel = null;
+    this._pendingCandidates = [];
     this._reconnectTimer = null;
-
-    // Initialize socket connection
+    this._attemptTimer = null;
+    this._signalingDisconnectTimer = null;
+    this._peerReady = false;
+    this._stopped = false;
     this.connectToSignalingServer();
   }
 
-  // Update current connection stage and notify via callback if provided
   _updateStage(stage) {
     this.stage = stage;
-    if (this.statusCallback) {
-      this.statusCallback(stage);
-    }
     console.log(`Connection stage updated: ${stage}`);
+    if (this.statusCallback) this.statusCallback(stage);
   }
 
-  // Connect to signaling server
+  _clearTimers() {
+    clearTimeout(this._reconnectTimer);
+    clearTimeout(this._attemptTimer);
+    clearTimeout(this._signalingDisconnectTimer);
+    this._reconnectTimer = null;
+    this._attemptTimer = null;
+    this._signalingDisconnectTimer = null;
+  }
+
+  _closeSocket() {
+    if (!this.socket) return;
+    this.socket.removeAllListeners();
+    this.socket.disconnect();
+    this.socket = null;
+  }
+
+  _closePeer() {
+    const connection = this.peerConnection;
+    this.peerConnection = null;
+    this._peerReady = false;
+    for (const channel of [this.channel, this.peerChannel]) {
+      if (!channel) continue;
+      channel.onclose = null;
+      channel.onopen = null;
+      channel.onmessage = null;
+      channel.onerror = null;
+      channel.close();
+    }
+    this.channel = null;
+    this.peerChannel = null;
+    this._pendingCandidates = [];
+    if (connection) {
+      connection.onconnectionstatechange = null;
+      connection.ondatachannel = null;
+      connection.close();
+    }
+  }
+
   connectToSignalingServer() {
-    console.log("Connecting to signaling server...");
-    this.socket = io(this.serverUrl);
+    if (this._stopped) return;
+    this._closeSocket();
+    // One retry controller owns both signaling and WebRTC recovery.
+    this.socket = io(this.serverUrl, { reconnection: false });
     this.setupSocketListeners();
   }
 
-  // Disconnect from signaling server
   disconnectFromSignalingServer() {
-    // Cancel any pending reconnect attempt
-    if (this._reconnectTimer !== null) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
-    }
-    if (this.socket && this.socket.connected) {
-      console.log("Disconnecting from signaling server");
+    if (this.socket?.connected) {
+      this._updateStage(3);
       this.socket.disconnect();
-      this._updateStage(3); // Signaling server disconnected
     }
   }
 
-  // Configure event listeners for socket communication
   setupSocketListeners() {
-    // Establish socket connection and join channel
-    this.socket.on("connect", () => {
-      console.log("Connected to signaling server");
-      this.socket.emit("join", this.channelName);
+    const socket = this.socket;
+    socket.on("connect", () => {
+      socket.emit("join", this.channelName);
       this._updateStage(1);
+      if (this.offerCreator) this.createOffer();
     });
-
-    // Handle socket disconnection
-    this.socket.on("disconnect", () => {
-      console.log("Disconnected from signaling server");
-      // Only log as unexpected if we didn't initiate the disconnect
-      if (this.stage !== 3) {
-        console.log("Unexpected server disconnection");
-      }
+    socket.on("connect_error", (error) => {
+      console.error("Signaling connection failed:", error);
+      this.handlePeerDisconnection();
     });
-
-    // Handle incoming WebRTC offer from remote peer
-    this.socket.on("offerReceived", async (offer) => {
-      console.log("offerReceived", offer);
-      await this.handleRemoteOffer(offer);
+    socket.on("disconnect", (reason) => {
+      if (this._peerReady || this._stopped) return;
+      console.error("Signaling disconnected:", reason);
+      this.handlePeerDisconnection();
     });
-
-    // Handle incoming WebRTC answer from remote peer
-    this.socket.on("answerReceived", async (answer) => {
-      console.log("answerReceived", answer);
-      await this.handleRemoteAnswer(answer);
-    });
-
-    // Handle incoming ICE candidates for connection negotiation
-    this.socket.on("iceCandidateReceived", async (candidate) => {
-      console.log("iceCandidateReceived", candidate);
-      await this.addIceCandidate(candidate);
-    });
+    for (const [event, handler] of [
+      ["offerReceived", (value) => this.handleRemoteOffer(value)],
+      ["answerReceived", (value) => this.handleRemoteAnswer(value)],
+      ["iceCandidateReceived", (value) => this.addIceCandidate(value)],
+    ]) {
+      socket.on(event, async (value) => {
+        try {
+          await handler(value);
+        } catch (error) {
+          if (this.socket !== socket) return;
+          console.error(`Signaling event ${event} failed:`, error);
+          this.handlePeerDisconnection();
+        }
+      });
+    }
   }
 
-  // Set up WebRTC peer connection with STUN servers
   async initializePeerConnection() {
-    // Configure ICE servers for NAT traversal
-    const iceConfig = {
+    const connection = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
       ],
-    };
-
-    // Create peer connection with ICE configuration
-    this.peerConnection = new RTCPeerConnection(iceConfig, {
-      optional: [{ RtpDataChannels: true }],
     });
-
-    // Create data channel for communication
+    this.peerConnection = connection;
     this.addDataChannel(this.channelName);
-
-    // Handle incoming data channels from remote peer
-    this.peerConnection.ondatachannel = (event) => {
+    connection.ondatachannel = (event) => {
+      if (this.peerConnection !== connection) return;
       this.peerChannel = event.channel;
-
-      // Set up event handlers for the peer channel
-      this.peerChannel.onmessage = (event) => {
-        this.onMessage(event);
-      };
-      this.peerChannel.onerror = (error) => {
-        console.log("Peer channel error:", error);
-      };
-      this.peerChannel.onclose = () => {
-        console.log("Peer channel closed");
-        this.handlePeerDisconnection();
-      };
-      this.peerChannel.onopen = (event) => {
-        console.log("Peer channel opened:", event);
-      };
+      this._configureChannel(event.channel, connection);
+      this._notifyPeerReady(connection);
     };
-
-    // Send ICE candidates to remote peer
-    this.peerConnection.addEventListener("icecandidate", (event) => {
-      if (event.candidate) {
+    connection.addEventListener("icecandidate", (event) => {
+      if (this.peerConnection === connection && event.candidate) {
         this.submitIceCandidate(event.candidate);
       }
     });
-
-    // Monitor connection state
-    this.peerConnection.onconnectionstatechange = (event) => {
-      console.log(
-        "Connection state change:",
-        this.peerConnection.connectionState
-      );
-
-      if (this.peerConnection.connectionState === "connected") {
-        console.log("Peers Connected");
-        this.reconnectAttempts = 0; // Reset counter on successful connection
-        this._updateStage(2);
-
-        // Delay to ensure channel is ready before callback
-        let work = null;
-        work = setInterval(() => {
-          if (this.peerChannel !== null) {
-            clearInterval(work);
-            this.peerConnectCallback(this.peerChannel);
-
-            // Disconnect from signaling server after successful peer connection
-            setTimeout(() => this.disconnectFromSignalingServer(), 1000);
-          }
-        }, 200);
-      } else if (
-        ["disconnected", "failed", "closed"].includes(
-          this.peerConnection.connectionState
-        )
-      ) {
-        console.log("Peer connection lost");
+    connection.onconnectionstatechange = () => {
+      if (this.peerConnection !== connection) return;
+      if (connection.connectionState === "connected") {
+        this._notifyPeerReady(connection);
+      } else if (["disconnected", "failed", "closed"].includes(connection.connectionState)) {
         this.handlePeerDisconnection();
       }
     };
+    return connection;
   }
 
-  // Handle peer disconnection
-  handlePeerDisconnection() {
-    // Only handle if we were previously connected
-    if (this.stage === 2 || this.stage === 3) {
-      console.log("Handling peer disconnection");
-      this._updateStage(4);
+  _configureChannel(channel, connection) {
+    channel.onmessage = (event) => this.onMessage(event);
+    channel.onerror = (error) => console.error("Data channel error:", error);
+    channel.onclose = () => {
+      if (this.peerConnection === connection) this.handlePeerDisconnection();
+    };
+    channel.onopen = () => this._notifyPeerReady(connection);
+  }
 
-      // Clean up existing connection
-      if (this.peerConnection) {
-        this.peerConnection.close();
-        this.peerConnection = null;
+  _notifyPeerReady(connection) {
+    if (this.peerConnection !== connection || this._peerReady ||
+        connection.connectionState !== "connected" || this.peerChannel?.readyState !== "open") return;
+    this._clearTimers();
+    this._peerReady = true;
+    this.reconnectAttempts = 0;
+    this._updateStage(2);
+    this._signalingDisconnectTimer = setTimeout(() => {
+      this._signalingDisconnectTimer = null;
+      if (this.peerConnection === connection && this._peerReady) {
+        this.disconnectFromSignalingServer();
       }
-      this.channel = null;
-      this.peerChannel = null;
-
-      // Reconnect to signaling server
-      this.reconnectToSignalingServer();
-    }
+    }, 1000);
+    this.peerConnectCallback(this.peerChannel);
   }
 
-  // Reconnect to signaling server with exponential backoff
+  handlePeerDisconnection() {
+    if (this._stopped || this.stage === 5 || this._reconnectTimer !== null) return;
+    this._clearTimers();
+    this._closePeer();
+    this._closeSocket();
+    this._updateStage(4);
+    this.reconnectToSignalingServer();
+  }
+
   reconnectToSignalingServer() {
+    if (this._stopped || this._reconnectTimer !== null) return;
     if (this.maxReconnectAttempts !== -1 && this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log(`Max reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
       this._updateStage(5);
       return;
     }
-
+    const delay = Math.min(this.reconnectBaseDelay * 2 ** this.reconnectAttempts, 30000);
     this.reconnectAttempts++;
-    const delay = Math.min(
-      this.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts - 1),
-      30000
-    );
-    const maxLabel = this.maxReconnectAttempts === -1 ? '\u221e' : this.maxReconnectAttempts;
-    console.log(`Reconnect attempt ${this.reconnectAttempts}/${maxLabel} in ${delay}ms...`);
-
-    // Clean up existing socket before reconnecting
-    if (this.socket) {
-      this.socket.removeAllListeners();
-      this.socket.disconnect();
-    }
-
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
-      this.connectToSignalingServer();
-      if (this.offerCreator) {
-        // Delay offer creation to allow the remote peer to rejoin the channel first
-        setTimeout(() => this.createOffer(), 2000);
-      }
+      this._startReconnectAttempt();
     }, delay);
   }
 
-  // Initiate WebRTC connection by creating and sending an offer
-  createOffer() {
-    this.offerCreator = true;
-    let work = null;
-    work = setInterval(async () => {
-      if (this.stage == 1) {
-        clearInterval(work);
-        await this.initializePeerConnection();
-
-        // Create and send WebRTC offer
-        const offer = await this.peerConnection.createOffer();
-        await this.peerConnection.setLocalDescription(offer);
-
-        this.socket.emit("submitOffer", {
-          channelName: this.channelName,
-          offer: JSON.stringify(offer),
-        });
-      }
-    }, 200);
+  _startReconnectAttempt() {
+    this._attemptTimer = setTimeout(() => {
+      console.error("Peer reconnection timed out");
+      this.handlePeerDisconnection();
+    }, this.reconnectTimeout);
+    this.connectToSignalingServer();
   }
 
-  // Process incoming WebRTC offer from remote peer
+  // Start a fresh retry budget, including after automatic retries are exhausted.
+  reconnect() {
+    this._clearTimers();
+    this._closePeer();
+    this._closeSocket();
+    this._stopped = false;
+    this.reconnectAttempts = 0;
+    this._updateStage(4);
+    this._startReconnectAttempt();
+  }
+
+  disconnect() {
+    this._stopped = true;
+    this._clearTimers();
+    this._closePeer();
+    this._closeSocket();
+    this._updateStage(0);
+  }
+
+  async createOffer() {
+    this.offerCreator = true;
+    if (this._stopped || !this.socket?.connected || this.peerConnection) return;
+    const socket = this.socket;
+    let connection;
+    try {
+      connection = await this.initializePeerConnection();
+      const offer = await connection.createOffer();
+      if (this.peerConnection !== connection) return;
+      await connection.setLocalDescription(offer);
+      if (this.peerConnection !== connection) return;
+      socket.emit("submitOffer", {
+        channelName: this.channelName,
+        offer: JSON.stringify(offer),
+      });
+    } catch (error) {
+      if (connection && this.peerConnection !== connection) return;
+      console.error("Creating offer failed:", error);
+      this.handlePeerDisconnection();
+    }
+  }
+
   async handleRemoteOffer(offerString) {
-    await this.initializePeerConnection();
-
-    // Parse and set remote description
-    const offer = JSON.parse(offerString);
-    const remoteDesc = new RTCSessionDescription(offer);
-    await this.peerConnection.setRemoteDescription(remoteDesc);
-
-    // Create and send answer
-    const answer = await this.peerConnection.createAnswer();
-    await this.peerConnection.setLocalDescription(answer);
-
-    this.socket.emit("submitAnswer", {
+    if (this._stopped || this._peerReady || this.offerCreator) return;
+    if (this.peerConnection) this._closePeer();
+    const socket = this.socket;
+    const connection = await this.initializePeerConnection();
+    const offer = new RTCSessionDescription(JSON.parse(offerString));
+    await connection.setRemoteDescription(offer);
+    if (this.peerConnection !== connection) return;
+    await this._flushCandidates(connection);
+    const answer = await connection.createAnswer();
+    if (this.peerConnection !== connection) return;
+    await connection.setLocalDescription(answer);
+    if (this.peerConnection !== connection) return;
+    socket.emit("submitAnswer", {
       channelName: this.channelName,
       answer: JSON.stringify(answer),
     });
   }
 
-  // Process incoming WebRTC answer from remote peer
   async handleRemoteAnswer(answerString) {
-    const answer = JSON.parse(answerString);
-    const remoteDesc = new RTCSessionDescription(answer);
-    await this.peerConnection.setRemoteDescription(remoteDesc);
+    const connection = this.peerConnection;
+    if (!connection || connection.signalingState !== "have-local-offer") return;
+    await connection.setRemoteDescription(new RTCSessionDescription(JSON.parse(answerString)));
+    if (this.peerConnection === connection) await this._flushCandidates(connection);
   }
 
-  // Submit ICE candidate to signaling server
   submitIceCandidate(candidate) {
-    this.socket.emit("submitIceCandidate", {
+    this.socket?.emit("submitIceCandidate", {
       channelName: this.channelName,
       candidate: JSON.stringify(candidate),
     });
   }
 
-  // Add received ICE candidate to peer connection
   async addIceCandidate(candidateString) {
+    if (this._stopped || this.stage === 5) return;
     const candidate = JSON.parse(candidateString);
-    await this.peerConnection.addIceCandidate(candidate);
+    const connection = this.peerConnection;
+    if (!connection?.remoteDescription) {
+      this._pendingCandidates.push(candidate);
+      return;
+    }
+    await connection.addIceCandidate(candidate);
   }
 
-  // Create a reliable data channel for peer communication
-  addDataChannel(channelName) {
-    this.channel = this.peerConnection.createDataChannel(channelName, {
-      reliable: true,
-    });
+  async _flushCandidates(connection) {
+    const candidates = this._pendingCandidates.splice(0);
+    for (const candidate of candidates) {
+      if (this.peerConnection !== connection) return;
+      await connection.addIceCandidate(candidate);
+    }
+  }
 
-    // Configure channel event handlers
-    this.channel.onmessage = (event) => {
-      this.onMessage(event);
-    };
-    this.channel.onerror = (error) => {
-      console.log("Data channel error:", error);
-    };
-    this.channel.onclose = () => {
-      console.log("Data channel closed");
-    };
-    this.channel.onopen = (event) => {
-      console.log("Data channel opened:", event);
-    };
+  addDataChannel(channelName) {
+    this.channel = this.peerConnection.createDataChannel(channelName, { reliable: true });
+    this._configureChannel(this.channel, this.peerConnection);
   }
 }
 
